@@ -106,8 +106,12 @@ func (l *GenericCDIPluginLister) NewPlugin(name string) dpm.PluginInterface {
 }
 
 func main() {
-	var cdiJSON string
-	flag.StringVar(&cdiJSON, "str", "/var/run/cdi/nvidia-container-toolkit.json", "path to cdi json")
+	flag.Parse()
+	if flag.NArg() != 1 {
+		log.Fatal("missing cdi json argument")
+	}
+	cdiJSON := flag.Arg(0)
+
 	spec, err := cdi.ReadSpec(cdiJSON, 0)
 	if err != nil {
 		panic(err)
