@@ -5,10 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
+	"google.golang.org/grpc"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
+	podresourcesv1 "k8s.io/kubelet/pkg/apis/podresources/v1"
+	"k8s.io/kubernetes/pkg/kubelet/apis/podresources"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 
@@ -17,6 +21,8 @@ type GenericCDIPlugin struct {
 	kind     string
 	update   chan interface{}
 	stop     chan interface{}
+	client   podresourcesv1.PodResourcesListerClient
+	conn     *grpc.ClientConn
 }
 
 func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
@@ -40,7 +46,10 @@ func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 }
 
 func (*GenericCDIPlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
-	return &pluginapi.DevicePluginOptions{}, nil
+	return &pluginapi.DevicePluginOptions{
+		PreStartRequired:                false,
+		GetPreferredAllocationAvailable: false,
+	}, nil
 }
 
 func (*GenericCDIPlugin) GetPreferredAllocation(context.Context, *pluginapi.PreferredAllocationRequest) (*pluginapi.PreferredAllocationResponse, error) {
@@ -49,16 +58,45 @@ func (*GenericCDIPlugin) GetPreferredAllocation(context.Context, *pluginapi.Pref
 
 func (dp *GenericCDIPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
 	log.Printf("Listening... %s=%s", dp.kind, dp.resource)
+	defer dp.conn.Close()
+
+	resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
+	devices := []*pluginapi.Device{}
 	for {
-		devices := []*pluginapi.Device{}
+		usedDeviceIds := make(map[string]bool)
+		newDevices := []*pluginapi.Device{}
+
+		resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
+		if err != nil {
+			log.Fatalf("Failed to list pod resources: %v", err)
+		}
+		for _, res := range resp.PodResources {
+			for _, cont := range res.Containers {
+				for _, dev := range cont.Devices {
+					if dev.ResourceName != resource {
+						continue
+					}
+					for _, deviceID := range dev.DeviceIds {
+						usedDeviceIds[deviceID] = true
+					}
+				}
+			}
+		}
+		for _, dev := range devices {
+			if usedDeviceIds[dev.ID] {
+				newDevices = append(newDevices, dev)
+			}
+		}
+
 		id := uuid.New()
-		devices = append(devices, &pluginapi.Device{
+		newDevices = append(newDevices, &pluginapi.Device{
 			ID:     id.String(),
 			Health: pluginapi.Healthy,
 		})
 		log.Printf("Registering device for %s=%s: %s", dp.kind, dp.resource, id.String())
+		devices = append([]*pluginapi.Device{}, newDevices...)
 		s.Send(&pluginapi.ListAndWatchResponse{
-			Devices: devices,
+			Devices: newDevices,
 		})
 		select {
 		case <-dp.stop:
@@ -97,11 +135,19 @@ func (l *GenericCDIPluginLister) GetResourceNamespace() string {
 func (l *GenericCDIPluginLister) NewPlugin(name string) dpm.PluginInterface {
 	resource := name[len(l.spec.GetClass())+1:]
 	log.Printf("Registering plugin for %s=%s", l.spec.Kind, resource)
+
+	client, conn, err := podresources.GetV1Client("unix:///var/lib/kubelet/pod-resources/kubelet.sock", 60*time.Second, 1024*1024)
+	if err != nil {
+		log.Fatalf("Failed to connect to pod-resources kubelet: %v", err)
+	}
+
 	return &GenericCDIPlugin{
 		resource: resource,
 		kind:     l.spec.Kind,
 		update:   make(chan interface{}),
 		stop:     make(chan interface{}),
+		client:   client,
+		conn:     conn,
 	}
 }
 
