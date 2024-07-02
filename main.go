@@ -87,7 +87,7 @@ func (*GenericCDIPlugin) PreStartContainer(context.Context, *pluginapi.PreStartC
 	return &pluginapi.PreStartContainerResponse{}, nil
 }
 
-func (dp *GenericCDIPlugin) Start() {
+func (dp *GenericCDIPlugin) Start() error {
 	id := uuid.New()
 	dp.devices = append(dp.devices, &pluginapi.Device{
 		ID:     id.String(),
@@ -145,11 +145,15 @@ func (dp *GenericCDIPlugin) Start() {
 			}
 		}
 	}(dp)
+
+	return nil
 }
 
-func (dp *GenericCDIPlugin) Stop() {
+func (dp *GenericCDIPlugin) Stop() error {
 	dp.stop <- true
 	dp.conn.Close()
+
+	return nil
 }
 
 type GenericCDIPluginLister struct {
