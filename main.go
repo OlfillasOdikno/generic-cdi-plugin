@@ -97,7 +97,6 @@ func (dp *GenericCDIPlugin) Start() error {
 
 	go func(dp *GenericCDIPlugin) {
 		resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
-		usedDeviceIds := make(map[string]bool)
 
 		for {
 			select {
@@ -114,6 +113,7 @@ func (dp *GenericCDIPlugin) Start() error {
 					log.Fatalf("Failed to list pod resources: %v", err)
 				}
 				newDevices := []*pluginapi.Device{}
+				usedDeviceIds := make(map[string]bool)
 				for _, res := range resp.PodResources {
 					for _, cont := range res.Containers {
 						for _, dev := range cont.Devices {
