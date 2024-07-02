@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,8 @@ type GenericCDIPlugin struct {
 	stop     chan interface{}
 	client   podresourcesv1.PodResourcesListerClient
 	conn     *grpc.ClientConn
+	mu       sync.Mutex
+	devices  []*pluginapi.Device
 }
 
 func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
@@ -41,6 +44,14 @@ func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 		})
 	}
 
+	dp.mu.Lock()
+	id := uuid.New()
+	dp.devices = append(dp.devices, &pluginapi.Device{
+		ID:     id.String(),
+		Health: pluginapi.Healthy,
+	})
+	log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	dp.mu.Unlock()
 	dp.update <- true
 	return responses, nil
 }
@@ -58,45 +69,9 @@ func (*GenericCDIPlugin) GetPreferredAllocation(context.Context, *pluginapi.Pref
 
 func (dp *GenericCDIPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
 	log.Printf("Listening... %s=%s", dp.kind, dp.resource)
-	defer dp.conn.Close()
-
-	resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
-	devices := []*pluginapi.Device{}
 	for {
-		usedDeviceIds := make(map[string]bool)
-		newDevices := []*pluginapi.Device{}
-
-		resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
-		if err != nil {
-			log.Fatalf("Failed to list pod resources: %v", err)
-		}
-		for _, res := range resp.PodResources {
-			for _, cont := range res.Containers {
-				for _, dev := range cont.Devices {
-					if dev.ResourceName != resource {
-						continue
-					}
-					for _, deviceID := range dev.DeviceIds {
-						usedDeviceIds[deviceID] = true
-					}
-				}
-			}
-		}
-		for _, dev := range devices {
-			if usedDeviceIds[dev.ID] {
-				newDevices = append(newDevices, dev)
-			}
-		}
-
-		id := uuid.New()
-		newDevices = append(newDevices, &pluginapi.Device{
-			ID:     id.String(),
-			Health: pluginapi.Healthy,
-		})
-		log.Printf("Registering device for %s=%s: %s", dp.kind, dp.resource, id.String())
-		devices = append([]*pluginapi.Device{}, newDevices...)
 		s.Send(&pluginapi.ListAndWatchResponse{
-			Devices: newDevices,
+			Devices: dp.devices,
 		})
 		select {
 		case <-dp.stop:
@@ -112,8 +87,69 @@ func (*GenericCDIPlugin) PreStartContainer(context.Context, *pluginapi.PreStartC
 	return &pluginapi.PreStartContainerResponse{}, nil
 }
 
+func (dp *GenericCDIPlugin) Start() {
+	id := uuid.New()
+	dp.devices = append(dp.devices, &pluginapi.Device{
+		ID:     id.String(),
+		Health: pluginapi.Healthy,
+	})
+	log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+
+	go func(dp *GenericCDIPlugin) {
+		resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
+		usedDeviceIds := make(map[string]bool)
+
+		for {
+			select {
+			case <-dp.stop:
+				log.Printf("stopping garbage collector...")
+				return
+			case <-time.After(30 * time.Second):
+				dp.mu.Lock()
+				log.Printf("collecting garbage...")
+				start := time.Now()
+
+				resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
+				if err != nil {
+					log.Fatalf("Failed to list pod resources: %v", err)
+				}
+				newDevices := []*pluginapi.Device{}
+				for _, res := range resp.PodResources {
+					for _, cont := range res.Containers {
+						for _, dev := range cont.Devices {
+							if dev.ResourceName != resource {
+								continue
+							}
+							for _, deviceID := range dev.DeviceIds {
+								usedDeviceIds[deviceID] = true
+							}
+						}
+					}
+				}
+				for devID := range usedDeviceIds {
+					newDevices = append(newDevices, &pluginapi.Device{
+						ID:     devID,
+						Health: pluginapi.Healthy,
+					})
+				}
+				id := uuid.New()
+				newDevices = append(newDevices, &pluginapi.Device{
+					ID:     id.String(),
+					Health: pluginapi.Healthy,
+				})
+				log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+				dp.devices = newDevices
+				duration := time.Since(start)
+				log.Printf("garbage collection too %v seconds", duration.Seconds())
+				dp.mu.Unlock()
+			}
+		}
+	}(dp)
+}
+
 func (dp *GenericCDIPlugin) Stop() {
 	dp.stop <- true
+	dp.conn.Close()
 }
 
 type GenericCDIPluginLister struct {
@@ -148,6 +184,7 @@ func (l *GenericCDIPluginLister) NewPlugin(name string) dpm.PluginInterface {
 		stop:     make(chan interface{}),
 		client:   client,
 		conn:     conn,
+		devices:  []*pluginapi.Device{},
 	}
 }
 
