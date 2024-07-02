@@ -142,6 +142,7 @@ func (dp *GenericCDIPlugin) Start() error {
 				duration := time.Since(start)
 				log.Printf("garbage collection too %v seconds", duration.Seconds())
 				dp.mu.Unlock()
+				dp.update <- true
 			}
 		}
 	}(dp)
