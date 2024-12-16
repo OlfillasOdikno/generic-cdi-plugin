@@ -29,12 +29,11 @@ type GenericCDIPlugin struct {
 }
 
 func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
-
 	responses := &pluginapi.AllocateResponse{}
 	for _, req := range r.ContainerRequests {
 		devices := []*pluginapi.CDIDevice{}
 		for _, id := range req.DevicesIDs {
-			log.Printf("Got Allocate request for %s passing %s=%s", id, dp.kind, dp.resource)
+			log.Printf("Got Allocate request for %s=%s: %s", dp.kind, dp.resource, id)
 			devices = append(devices, &pluginapi.CDIDevice{
 				Name: fmt.Sprintf("%s=%s", dp.kind, dp.resource),
 			})
@@ -50,7 +49,7 @@ func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 		ID:     id.String(),
 		Health: pluginapi.Healthy,
 	})
-	log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
 	dp.mu.Unlock()
 	dp.update <- true
 	return responses, nil
@@ -68,14 +67,14 @@ func (*GenericCDIPlugin) GetPreferredAllocation(context.Context, *pluginapi.Pref
 }
 
 func (dp *GenericCDIPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
-	log.Printf("Listening... %s=%s", dp.kind, dp.resource)
+	log.Printf("Listening for %s=%s...", dp.kind, dp.resource)
 	for {
 		s.Send(&pluginapi.ListAndWatchResponse{
 			Devices: dp.devices,
 		})
 		select {
 		case <-dp.stop:
-			log.Printf("Stopping for %s=%s", dp.kind, dp.resource)
+			log.Printf("Stopping for %s=%s.", dp.kind, dp.resource)
 			return nil
 		case <-dp.update:
 			continue
@@ -93,7 +92,7 @@ func (dp *GenericCDIPlugin) Start() error {
 		ID:     id.String(),
 		Health: pluginapi.Healthy,
 	})
-	log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
 
 	go func(dp *GenericCDIPlugin) {
 		resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
@@ -101,11 +100,11 @@ func (dp *GenericCDIPlugin) Start() error {
 		for {
 			select {
 			case <-dp.stop:
-				log.Printf("stopping garbage collector...")
+				log.Printf("Stopping garbage collector for %s=%s...", dp.kind, dp.resource)
 				return
 			case <-time.After(30 * time.Second):
 				dp.mu.Lock()
-				log.Printf("collecting garbage...")
+				log.Printf("Collecting garbage...")
 				start := time.Now()
 
 				resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
@@ -137,10 +136,10 @@ func (dp *GenericCDIPlugin) Start() error {
 					ID:     id.String(),
 					Health: pluginapi.Healthy,
 				})
-				log.Printf("Adding new device device for %s=%s: %s", dp.kind, dp.resource, id.String())
+				log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
 				dp.devices = newDevices
 				duration := time.Since(start)
-				log.Printf("garbage collection too %v seconds", duration.Seconds())
+				log.Printf("Garbage collection took %v seconds", duration.Seconds())
 				dp.mu.Unlock()
 				dp.update <- true
 			}
@@ -196,7 +195,7 @@ func (l *GenericCDIPluginLister) NewPlugin(name string) dpm.PluginInterface {
 func main() {
 	flag.Parse()
 	if flag.NArg() != 1 {
-		log.Fatal("missing cdi json argument")
+		log.Fatal("No path to CDI JSON provided. Exiting.")
 	}
 	cdiJSON := flag.Arg(0)
 
