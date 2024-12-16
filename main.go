@@ -37,6 +37,42 @@ func (dp *GenericCDIPlugin) createDevice() {
 	log.Printf("Created new device for %s=%s: %s", dp.kind, dp.resource, id.String())
 }
 
+func (dp *GenericCDIPlugin) collectGarbage() {
+	resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
+
+	dp.mu.Lock()
+	log.Printf("Collecting garbage for %s=%s...", dp.kind, dp.resource)
+	start := time.Now()
+
+	resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
+	if err != nil {
+		log.Fatalf("Failed to list pod resources: %v", err)
+	}
+
+	newDevices := []*pluginapi.Device{}
+	for _, res := range resp.PodResources {
+		for _, cont := range res.Containers {
+			for _, dev := range cont.Devices {
+				if dev.ResourceName != resource {
+					continue
+				}
+				for _, deviceID := range dev.DeviceIds {
+					newDevices = append(newDevices, &pluginapi.Device{
+						ID:     deviceID,
+						Health: pluginapi.Healthy,
+					})
+				}
+			}
+		}
+	}
+	dp.devices = newDevices
+	dp.createDevice()
+	duration := time.Since(start)
+	log.Printf("Garbage collection for %s=%s took %v seconds", dp.kind, dp.resource, duration.Seconds())
+	dp.mu.Unlock()
+	dp.update <- true
+}
+
 func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	responses := &pluginapi.AllocateResponse{}
 	for _, req := range r.ContainerRequests {
@@ -95,48 +131,13 @@ func (dp *GenericCDIPlugin) Start() error {
 	dp.createDevice()
 
 	go func(dp *GenericCDIPlugin) {
-		resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
-
 		for {
 			select {
 			case <-dp.stop:
 				log.Printf("Stopping garbage collector for %s=%s...", dp.kind, dp.resource)
 				return
 			case <-time.After(30 * time.Second):
-				dp.mu.Lock()
-				log.Printf("Collecting garbage...")
-				start := time.Now()
-
-				resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
-				if err != nil {
-					log.Fatalf("Failed to list pod resources: %v", err)
-				}
-				newDevices := []*pluginapi.Device{}
-				usedDeviceIds := make(map[string]bool)
-				for _, res := range resp.PodResources {
-					for _, cont := range res.Containers {
-						for _, dev := range cont.Devices {
-							if dev.ResourceName != resource {
-								continue
-							}
-							for _, deviceID := range dev.DeviceIds {
-								usedDeviceIds[deviceID] = true
-							}
-						}
-					}
-				}
-				for devID := range usedDeviceIds {
-					newDevices = append(newDevices, &pluginapi.Device{
-						ID:     devID,
-						Health: pluginapi.Healthy,
-					})
-				}
-				dp.devices = newDevices
-				dp.createDevice()
-				duration := time.Since(start)
-				log.Printf("Garbage collection took %v seconds", duration.Seconds())
-				dp.mu.Unlock()
-				dp.update <- true
+				dp.collectGarbage()
 			}
 		}
 	}(dp)
