@@ -28,12 +28,22 @@ type GenericCDIPlugin struct {
 	devices  []*pluginapi.Device
 }
 
+func (dp *GenericCDIPlugin) createDevice() {
+	id := uuid.New()
+	dp.devices = append(dp.devices, &pluginapi.Device{
+		ID:     id.String(),
+		Health: pluginapi.Healthy,
+	})
+	log.Printf("Created new device for %s=%s: %s", dp.kind, dp.resource, id.String())
+}
+
 func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	responses := &pluginapi.AllocateResponse{}
 	for _, req := range r.ContainerRequests {
 		devices := []*pluginapi.CDIDevice{}
 		for _, id := range req.DevicesIDs {
 			log.Printf("Got Allocate request for %s=%s: %s", dp.kind, dp.resource, id)
+
 			devices = append(devices, &pluginapi.CDIDevice{
 				Name: fmt.Sprintf("%s=%s", dp.kind, dp.resource),
 			})
@@ -44,12 +54,7 @@ func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 	}
 
 	dp.mu.Lock()
-	id := uuid.New()
-	dp.devices = append(dp.devices, &pluginapi.Device{
-		ID:     id.String(),
-		Health: pluginapi.Healthy,
-	})
-	log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	dp.createDevice()
 	dp.mu.Unlock()
 	dp.update <- true
 	return responses, nil
@@ -87,12 +92,7 @@ func (*GenericCDIPlugin) PreStartContainer(context.Context, *pluginapi.PreStartC
 }
 
 func (dp *GenericCDIPlugin) Start() error {
-	id := uuid.New()
-	dp.devices = append(dp.devices, &pluginapi.Device{
-		ID:     id.String(),
-		Health: pluginapi.Healthy,
-	})
-	log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	dp.createDevice()
 
 	go func(dp *GenericCDIPlugin) {
 		resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
@@ -131,13 +131,8 @@ func (dp *GenericCDIPlugin) Start() error {
 						Health: pluginapi.Healthy,
 					})
 				}
-				id := uuid.New()
-				newDevices = append(newDevices, &pluginapi.Device{
-					ID:     id.String(),
-					Health: pluginapi.Healthy,
-				})
-				log.Printf("Adding new device for %s=%s: %s", dp.kind, dp.resource, id.String())
 				dp.devices = newDevices
+				dp.createDevice()
 				duration := time.Since(start)
 				log.Printf("Garbage collection took %v seconds", duration.Seconds())
 				dp.mu.Unlock()
