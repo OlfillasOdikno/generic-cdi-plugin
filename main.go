@@ -28,20 +28,25 @@ type GenericCDIPlugin struct {
 	devices  []*pluginapi.Device
 }
 
+func (dp *GenericCDIPlugin) printf(format string, v ...any) {
+	s := fmt.Sprintf(format, v...)
+	log.Printf("%s=%s: %s", dp.kind, dp.resource, s)
+
+}
 func (dp *GenericCDIPlugin) createDevice() {
 	id := uuid.New()
 	dp.devices = append(dp.devices, &pluginapi.Device{
 		ID:     id.String(),
 		Health: pluginapi.Healthy,
 	})
-	log.Printf("Created new device for %s=%s: %s", dp.kind, dp.resource, id.String())
+	dp.printf("created new device: %s", id.String())
 }
 
 func (dp *GenericCDIPlugin) collectGarbage() {
 	resource := fmt.Sprintf("%s-%s", dp.kind, dp.resource)
 
 	dp.mu.Lock()
-	log.Printf("Collecting garbage for %s=%s...", dp.kind, dp.resource)
+	dp.printf("collecting garbage...")
 	start := time.Now()
 
 	resp, err := dp.client.List(context.Background(), &podresourcesv1.ListPodResourcesRequest{})
@@ -68,7 +73,7 @@ func (dp *GenericCDIPlugin) collectGarbage() {
 	dp.devices = newDevices
 	dp.createDevice()
 	duration := time.Since(start)
-	log.Printf("Garbage collection for %s=%s took %v seconds", dp.kind, dp.resource, duration.Seconds())
+	dp.printf("garbage collection took %v seconds", duration.Seconds())
 	dp.mu.Unlock()
 	dp.update <- true
 }
@@ -78,7 +83,7 @@ func (dp *GenericCDIPlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 	for _, req := range r.ContainerRequests {
 		devices := []*pluginapi.CDIDevice{}
 		for _, id := range req.DevicesIDs {
-			log.Printf("Got Allocate request for %s=%s: %s", dp.kind, dp.resource, id)
+			dp.printf("got Allocate request: %s", id)
 
 			devices = append(devices, &pluginapi.CDIDevice{
 				Name: fmt.Sprintf("%s=%s", dp.kind, dp.resource),
@@ -108,14 +113,14 @@ func (*GenericCDIPlugin) GetPreferredAllocation(context.Context, *pluginapi.Pref
 }
 
 func (dp *GenericCDIPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
-	log.Printf("Listening for %s=%s...", dp.kind, dp.resource)
+	dp.printf("listening...")
 	for {
 		s.Send(&pluginapi.ListAndWatchResponse{
 			Devices: dp.devices,
 		})
 		select {
 		case <-dp.stop:
-			log.Printf("Stopping for %s=%s.", dp.kind, dp.resource)
+			dp.printf("stopping.")
 			return nil
 		case <-dp.update:
 			continue
@@ -134,7 +139,7 @@ func (dp *GenericCDIPlugin) Start() error {
 		for {
 			select {
 			case <-dp.stop:
-				log.Printf("Stopping garbage collector for %s=%s...", dp.kind, dp.resource)
+				dp.printf("stopping garbage collector.")
 				return
 			case <-time.After(30 * time.Second):
 				dp.collectGarbage()
