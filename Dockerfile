@@ -1,11 +1,13 @@
 FROM golang:1.22.2-bookworm as builder
-  
-COPY . /src
-WORKDIR /src
-RUN go build
 
-FROM debian:bookworm-20240423
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY --from=builder /src/generic-cdi-plugin /generic-cdi-plugin
-  
+COPY *.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /generic-cdi-plugin
+
+FROM scratch
+
+COPY --from=builder /generic-cdi-plugin /
+
 ENTRYPOINT /generic-cdi-plugin
